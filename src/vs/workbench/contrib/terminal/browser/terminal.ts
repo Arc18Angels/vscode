@@ -6,10 +6,10 @@
 import { Event } from 'vs/base/common/event';
 import { IDisposable } from 'vs/base/common/lifecycle';
 import { URI } from 'vs/base/common/uri';
-import { FindReplaceState } from 'vs/editor/contrib/find/findState';
+import { FindReplaceState } from 'vs/editor/contrib/find/browser/findState';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { IShellLaunchConfig, ITerminalDimensions, ITerminalLaunchError, ITerminalProfile, ITerminalTabLayoutInfoById, TerminalIcon, TitleEventSource, TerminalShellType, IExtensionTerminalProfile, TerminalLocation, ProcessPropertyType, ProcessCapability, IProcessPropertyMap } from 'vs/platform/terminal/common/terminal';
-import { ICommandTracker, INavigationMode, IRemoteTerminalAttachTarget, IStartExtensionTerminalRequest, ITerminalConfigHelper, ITerminalFont, ITerminalBackend, ITerminalProcessExtHostProxy, IRegisterContributedProfileArgs } from 'vs/workbench/contrib/terminal/common/terminal';
+import { IShellLaunchConfig, ITerminalDimensions, ITerminalLaunchError, ITerminalProfile, ITerminalTabLayoutInfoById, TerminalIcon, TitleEventSource, TerminalShellType, IExtensionTerminalProfile, TerminalLocation, ProcessPropertyType, IProcessPropertyMap } from 'vs/platform/terminal/common/terminal';
+import { INavigationMode, IRemoteTerminalAttachTarget, IStartExtensionTerminalRequest, ITerminalConfigHelper, ITerminalFont, ITerminalBackend, ITerminalProcessExtHostProxy, IRegisterContributedProfileArgs, IShellIntegration } from 'vs/workbench/contrib/terminal/common/terminal';
 import { ITerminalStatusList } from 'vs/workbench/contrib/terminal/browser/terminalStatusList';
 import { Orientation } from 'vs/base/browser/ui/splitview/splitview';
 import { IEditableData } from 'vs/workbench/common/views';
@@ -17,6 +17,8 @@ import { DeserializedTerminalEditorInput } from 'vs/workbench/contrib/terminal/b
 import { TerminalEditorInput } from 'vs/workbench/contrib/terminal/browser/terminalEditorInput';
 import { EditorGroupColumn } from 'vs/workbench/services/editor/common/editorGroupColumn';
 import { IKeyMods } from 'vs/platform/quickinput/common/quickInput';
+import { ITerminalCapabilityStore } from 'vs/workbench/contrib/terminal/common/capabilities/capabilities';
+import { IWorkspaceFolder } from 'vs/platform/workspace/common/workspace';
 
 export const ITerminalService = createDecorator<ITerminalService>('terminalService');
 export const ITerminalEditorService = createDecorator<ITerminalEditorService>('terminalEditorService');
@@ -75,8 +77,18 @@ export const enum Direction {
 }
 
 export interface IQuickPickTerminalObject {
-	config: IRegisterContributedProfileArgs | ITerminalProfile | { profile: IExtensionTerminalProfile, options: { icon?: string, color?: string } } | undefined,
-	keyMods: IKeyMods | undefined
+	config: IRegisterContributedProfileArgs | ITerminalProfile | { profile: IExtensionTerminalProfile; options: { icon?: string; color?: string } } | undefined;
+	keyMods: IKeyMods | undefined;
+}
+
+export interface ICommandTracker {
+	scrollToPreviousCommand(): void;
+	scrollToNextCommand(): void;
+	selectToPreviousCommand(): void;
+	selectToNextCommand(): void;
+	selectToPreviousLine(): void;
+	selectToNextLine(): void;
+	clearMarker(): void;
 }
 
 export interface ITerminalGroup {
@@ -192,12 +204,14 @@ export interface ITerminalService extends ITerminalInstanceHost {
 	getInstanceHost(target: ITerminalLocationOptions | undefined): ITerminalInstanceHost;
 	getFindHost(instance?: ITerminalInstance): ITerminalFindHost;
 
-	resolveLocation(location?: ITerminalLocationOptions): TerminalLocation | undefined
+	resolveLocation(location?: ITerminalLocationOptions): TerminalLocation | undefined;
 	setNativeDelegate(nativeCalls: ITerminalServiceNativeDelegate): void;
-	toggleDevTools(open?: boolean): Promise<void>;
 	handleNewRegisteredBackend(backend: ITerminalBackend): void;
+	toggleEscapeSequenceLogging(): Promise<void>;
 }
+export class TerminalLinkQuickPickEvent extends MouseEvent {
 
+}
 export interface ITerminalServiceNativeDelegate {
 	getWindowCount(): Promise<number>;
 	openDevTools(): Promise<void>;
@@ -249,8 +263,8 @@ export interface ICreateTerminalOptions {
 }
 
 export interface TerminalEditorLocation {
-	viewColumn: EditorGroupColumn,
-	preserveFocus?: boolean
+	viewColumn: EditorGroupColumn;
+	preserveFocus?: boolean;
 }
 
 /**
@@ -317,6 +331,7 @@ export interface ITerminalInstanceHost {
 	readonly onDidFocusInstance: Event<ITerminalInstance>;
 	readonly onDidChangeActiveInstance: Event<ITerminalInstance | undefined>;
 	readonly onDidChangeInstances: Event<void>;
+	readonly onDidChangeInstanceCapability: Event<ITerminalInstance>;
 
 	setActiveInstance(instance: ITerminalInstance): void;
 	/**
@@ -403,10 +418,10 @@ export interface ITerminalInstance {
 	readonly processName: string;
 	readonly sequence?: string;
 	readonly staticTitle?: string;
-	readonly workspaceFolder?: string;
+	readonly workspaceFolder?: IWorkspaceFolder;
 	readonly cwd?: string;
 	readonly initialCwd?: string;
-	readonly capabilities: ProcessCapability[];
+	readonly capabilities: ITerminalCapabilityStore;
 
 	readonly statusList: ITerminalStatusList;
 
@@ -508,10 +523,10 @@ export interface ITerminalInstance {
 
 	/**
 	 * Attach a listener that fires when the terminal's pty process exits. The number in the event
-	 * is the processes' exit code, an exit code of null means the process was killed as a result of
+	 * is the processes' exit code, an exit code of undefined means the process was killed as a result of
 	 * the ITerminalInstance being disposed.
 	 */
-	onExit: Event<number | undefined>;
+	onExit: Event<number | ITerminalLaunchError | undefined>;
 
 	readonly exitCode: number | undefined;
 
@@ -579,7 +594,7 @@ export interface ITerminalInstance {
 
 	description: string | undefined;
 
-	userHome: string | undefined
+	userHome: string | undefined;
 	/**
 	 * Shows the environment information hover if the widget exists.
 	 */
@@ -709,7 +724,7 @@ export interface ITerminalInstance {
 	 *
 	 * @param dimension The dimensions of the container.
 	 */
-	layout(dimension: { width: number, height: number }): void;
+	layout(dimension: { width: number; height: number }): void;
 
 	/**
 	 * Sets whether the terminal instance's element is visible in the DOM.
@@ -758,6 +773,8 @@ export interface ITerminalInstance {
 
 	toggleEscapeSequenceLogging(): Promise<boolean>;
 
+	setEscapeSequenceLogging(enable: boolean): void;
+
 	getInitialCwd(): Promise<string>;
 	getCwd(): Promise<string>;
 
@@ -784,6 +801,24 @@ export interface ITerminalInstance {
 	 * Triggers a quick pick to change the color of the associated terminal tab icon.
 	 */
 	changeColor(): Promise<void>;
+
+	/**
+	 * Triggers a quick pick that displays links from the viewport of the active terminal.
+	 * Selecting a file or web link will open it. Selecting a word link will copy it to the
+	 * clipboard.
+	 */
+	showLinkQuickpick(): Promise<void>;
+
+	/**
+	 * Triggers a quick pick that displays recent commands or cwds. Selecting one will
+	 * re-run it in the active terminal.
+	 */
+	runRecent(type: 'command' | 'cwd'): Promise<void>;
+
+	/**
+	 * Activates the most recent link of the given type.
+	 */
+	openRecentLink(type: 'localFile' | 'url'): Promise<void>;
 }
 
 export interface IXtermTerminal {
@@ -794,6 +829,11 @@ export interface IXtermTerminal {
 	readonly commandTracker: ICommandTracker;
 
 	/**
+	 * Reports the status of shell integration and fires events relating to it.
+	 */
+	readonly shellIntegration: IShellIntegration;
+
+	/**
 	 * The position of the terminal.
 	 */
 	target?: TerminalLocation;
@@ -801,12 +841,12 @@ export interface IXtermTerminal {
 	/**
 	 * Find the next instance of the term
 	*/
-	findNext(term: string, searchOptions: ISearchOptions): boolean;
+	findNext(term: string, searchOptions: ISearchOptions): Promise<boolean>;
 
 	/**
 	 * Find the previous instance of the term
 	 */
-	findPrevious(term: string, searchOptions: ISearchOptions): boolean;
+	findPrevious(term: string, searchOptions: ISearchOptions): Promise<boolean>;
 
 	/**
 	 * Forces the terminal to redraw its viewport.
@@ -834,7 +874,7 @@ export interface IXtermTerminal {
 
 export interface IRequestAddInstanceToGroupEvent {
 	uri: URI;
-	side: 'before' | 'after'
+	side: 'before' | 'after';
 }
 
 export const enum LinuxDistro {
